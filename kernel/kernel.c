@@ -2,89 +2,91 @@
 #include "kernel.h"
 #include "vga.h"
 #include "shell.h"
+#include "mm.h"
+#include "task.h"
+#include "fs.h"
+#include "stdio.h"
 
-static const size_t VGA_WIDTH = 80;
-static const size_t VGA_HEIGHT = 25;
+extern void gdt_init(void);
+extern void idt_init(void);
+extern void isr_init(void);
+extern void irq_init(void);
+extern void keyboard_init(void);
+extern void timer_init(uint32_t freq);
+extern void ata_init(void);
+extern void syscall_init(void);
 
-size_t terminal_row;
-size_t terminal_column;
-uint8_t terminal_color;
-uint16_t* terminal_buffer;
-
-void terminal_initialize(void) {
-    terminal_row = 0;
-    terminal_column = 0;
-    terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
-    terminal_buffer = (uint16_t*) 0xB8000;
-    for (size_t y = 0; y < VGA_HEIGHT; y++) {
-        for (size_t x = 0; x < VGA_WIDTH; x++) {
-            const size_t index = y * VGA_WIDTH + x;
-            terminal_buffer[index] = vga_entry(' ', terminal_color);
-        }
-    }
+void outb(uint16_t port, uint8_t value) {
+    asm volatile("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
-void terminal_setcolor(uint8_t color) {
-    terminal_color = color;
+uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    asm volatile("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
 }
 
-void terminal_putentryat(unsigned char c, uint8_t color, size_t x, size_t y) {
-    const size_t index = y * VGA_WIDTH + x;
-    terminal_buffer[index] = vga_entry(c, color);
+void outw(uint16_t port, uint16_t value) {
+    asm volatile("outw %0, %1" : : "a"(value), "Nd"(port));
 }
 
-void terminal_putchar(char c) {
-    unsigned char uc = c;
-    if (uc == '\n') {
-        terminal_column = 0;
-        terminal_row++;
-    } else {
-        terminal_putentryat(uc, terminal_color, terminal_column, terminal_row);
-        terminal_column++;
-    }
-    if (terminal_column >= VGA_WIDTH) {
-        terminal_column = 0;
-        terminal_row++;
-    }
-    if (terminal_row >= VGA_HEIGHT) {
-        terminal_row = 0;
-    }
-}
-
-void terminal_write(const char* data, size_t size) {
-    for (size_t i = 0; i < size; i++) {
-        terminal_putchar(data[i]);
-    }
-}
-
-void printk(const char *str) {
-    const char *p = str;
-    while (*p) {
-        terminal_putchar(*p++);
-    }
-}
-
-void printk_hex(uint32_t value) {
-    char hex[] = "0123456789ABCDEF";
-    char buf[11];
-    buf[0] = '0';
-    buf[1] = 'x';
-    for (int i = 7; i >= 0; i--) {
-        buf[2 + (7 - i)] = hex[(value >> (4 * i)) & 0xF];
-    }
-    buf[10] = '\0';
-    printk(buf);
+uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    asm volatile("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
 }
 
 void kernel_main(uint32_t magic, uint32_t addr) {
-    terminal_initialize();
-    printk("Welcome to Vaelen Linux Kernel!\n");
-    printk("Version 0.1\n");
-    printk("Copyright (C) 2026 Vaelen Project\n\n");
-    
+    vga_init();
+    vga_setcolor(0x07);
+
+    printf("Booting %s v%s (%s)...\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+
+    gdt_init();
+    printf("[OK] GDT initialized\n");
+
+    idt_init();
+    printf("[OK] IDT initialized\n");
+
+    isr_init();
+    printf("[OK] ISR handlers ready\n");
+
+    irq_init();
+    printf("[OK] IRQ remapped\n");
+
+    timer_init(100);
+    printf("[OK] PIT timer at 100Hz\n");
+
+    keyboard_init();
+    printf("[OK] PS/2 keyboard driver loaded\n");
+
+    ata_init();
+    printf("[OK] ATA disk driver initialized\n");
+
+    syscall_init();
+    printf("[OK] System call interface ready\n");
+
+    uint32_t mem_size = 8 * 1024 * 1024 * 1024ULL;
+    mm_init(mem_size, (uint32_t *)0x100000);
+    printf("[OK] Memory manager: %d MB total\n", mem_size / 1024 / 1024);
+
+    mm_init_paging();
+    printf("[OK] Paging enabled\n");
+
+    task_init();
+    printf("[OK] Task scheduler initialized\n");
+
+    fs_init();
+    printf("[OK] Virtual filesystem mounted\n");
+
+    printf("\n%s v%s (%s)\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+    printf("Kernel loaded successfully.\n\n");
+
+    asm volatile("sti");
+
     shell_run();
-    
-    while (1) {
-        __asm__ __volatile__("hlt");
+
+    for (;;) {
+        asm volatile("hlt");
     }
 }
